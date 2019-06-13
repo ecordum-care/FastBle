@@ -4,7 +4,9 @@ import android.Manifest;
 import android.app.AlertDialog;
 import android.app.ProgressDialog;
 import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothGattCharacteristic;
 import android.bluetooth.BluetoothGatt;
+import android.bluetooth.BluetoothGattService;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
@@ -19,6 +21,7 @@ import android.support.v4.content.ContextCompat;
 import android.support.v7.app.AppCompatActivity;
 import android.support.v7.widget.Toolbar;
 import android.text.TextUtils;
+import android.text.method.ScrollingMovementMethod;
 import android.util.Log;
 import android.view.View;
 import android.view.animation.Animation;
@@ -41,32 +44,39 @@ import com.clj.fastble.callback.BleGattCallback;
 import com.clj.fastble.callback.BleMtuChangedCallback;
 import com.clj.fastble.callback.BleRssiCallback;
 import com.clj.fastble.callback.BleScanCallback;
+import com.clj.fastble.callback.BleNotifyCallback;
+import com.clj.fastble.callback.BleReadCallback;
+import com.clj.fastble.callback.BleWriteCallback;
 import com.clj.fastble.data.BleDevice;
 import com.clj.fastble.exception.BleException;
 import com.clj.fastble.scan.BleScanRuleConfig;
+import com.clj.fastble.utils.HexUtil;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
-
+import java.util.Date;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.text.SimpleDateFormat;
 
 public class MainActivity extends AppCompatActivity implements View.OnClickListener {
 
     private static final String TAG = MainActivity.class.getSimpleName();
     private static final int REQUEST_CODE_OPEN_GPS = 1;
     private static final int REQUEST_CODE_PERMISSION_LOCATION = 2;
-
+    private static SimpleDateFormat formatter = new  SimpleDateFormat("HH:mm:ss.SSS");
     private LinearLayout layout_setting;
     private TextView txt_setting;
     private Button btn_scan;
     private EditText et_name, et_mac, et_uuid;
     private Switch sw_auto;
     private ImageView img_loading;
-
+    private TextView txt_log;
     private Animation operatingAnim;
     private DeviceAdapter mDeviceAdapter;
     private ProgressDialog progressDialog;
-
+    private BleDevice currDev;
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -84,7 +94,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     @Override
     protected void onResume() {
         super.onResume();
-        showConnectedDevice();
+        //showConnectedDevice();
     }
 
     @Override
@@ -109,6 +119,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                 if (layout_setting.getVisibility() == View.VISIBLE) {
                     layout_setting.setVisibility(View.GONE);
                     txt_setting.setText(getString(R.string.expand_search_settings));
+                    txt_log.setText("");
                 } else {
                     layout_setting.setVisibility(View.VISIBLE);
                     txt_setting.setText(getString(R.string.retrieve_search_settings));
@@ -169,6 +180,9 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         });
         ListView listView_device = (ListView) findViewById(R.id.list_device);
         listView_device.setAdapter(mDeviceAdapter);
+        txt_log = (TextView) findViewById(R.id.log_txt);
+        txt_log.setMovementMethod(ScrollingMovementMethod.getInstance());
+
     }
 
     private void showConnectedDevice() {
@@ -181,6 +195,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     }
 
     private void setScanRule() {
+        addText(txt_log,"start ScanRule");
         String[] uuids;
         String str_uuid = et_uuid.getText().toString();
         if (TextUtils.isEmpty(str_uuid)) {
@@ -219,12 +234,13 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                 .setDeviceName(true, names)   // 只扫描指定广播名的设备，可选
                 .setDeviceMac(mac)                  // 只扫描指定mac的设备，可选
                 .setAutoConnect(isAutoConnect)      // 连接时的autoConnect参数，可选，默认false
-                .setScanTimeOut(10000)              // 扫描超时时间，可选，默认10秒
+               .setScanTimeOut(5000)              // 扫描超时时间，可选，默认10秒
                 .build();
         BleManager.getInstance().initScanRule(scanRuleConfig);
     }
 
     private void startScan() {
+        addText(txt_log,"start Scan");
         BleManager.getInstance().scan(new BleScanCallback() {
             @Override
             public void onScanStarted(boolean success) {
@@ -233,6 +249,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                 img_loading.startAnimation(operatingAnim);
                 img_loading.setVisibility(View.VISIBLE);
                 btn_scan.setText(getString(R.string.stop_scan));
+                addText(txt_log,"scan started");
             }
 
             @Override
@@ -242,12 +259,17 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
 
             @Override
             public void onScanning(BleDevice bleDevice) {
-                mDeviceAdapter.addDevice(bleDevice);
-                mDeviceAdapter.notifyDataSetChanged();
+                currDev = bleDevice;
+                addText(txt_log,"scanning:" + bleDevice.getMac());               
+                connect( currDev );
+                BleManager.getInstance().cancelScan();
+                //mDeviceAdapter.addDevice(bleDevice);
+                //mDeviceAdapter.notifyDataSetChanged();
             }
 
             @Override
             public void onScanFinished(List<BleDevice> scanResultList) {
+                addText(txt_log,"Scan finished");
                 img_loading.clearAnimation();
                 img_loading.setVisibility(View.INVISIBLE);
                 btn_scan.setText(getString(R.string.start_scan));
@@ -274,28 +296,119 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
             @Override
             public void onConnectSuccess(BleDevice bleDevice, BluetoothGatt gatt, int status) {
                 progressDialog.dismiss();
-                mDeviceAdapter.addDevice(bleDevice);
-                mDeviceAdapter.notifyDataSetChanged();
+                addText(txt_log,"connected:" + bleDevice.getMac()); 
+                
+                //BluetoothGattCharacteristic characteristic = gatt.getService(uuidFromString("0783b03e-8535-b5a0-7140-a304d2495cb7")).getCharacteristic(uuidFromString("0783b03e-8535-b5a0-7140-a304d2495cb8"));
+                 //if( ! sw_auto.isChecked())
+                 //                                           BleManager.getInstance().disconnect(bleDevice);                                               
+                startNotify(bleDevice);//, characteristic);
+                //mDeviceAdapter.addDevice(bleDevice);
+                //mDeviceAdapter.notifyDataSetChanged();
             }
 
             @Override
             public void onDisConnected(boolean isActiveDisConnected, BleDevice bleDevice, BluetoothGatt gatt, int status) {
                 progressDialog.dismiss();
-
-                mDeviceAdapter.removeDevice(bleDevice);
-                mDeviceAdapter.notifyDataSetChanged();
-
+                addText(txt_log,"disconnected:" + bleDevice.getMac());
+                //mDeviceAdapter.removeDevice(bleDevice);
+                //mDeviceAdapter.notifyDataSetChanged();
+                if( ! sw_auto.isChecked())
+                    startScan();
+/*
                 if (isActiveDisConnected) {
                     Toast.makeText(MainActivity.this, getString(R.string.active_disconnected), Toast.LENGTH_LONG).show();
                 } else {
                     Toast.makeText(MainActivity.this, getString(R.string.disconnected), Toast.LENGTH_LONG).show();
                     ObserverManager.getInstance().notifyObserver(bleDevice);
                 }
-
+*/
             }
         });
     }
+    private void startNotify(final BleDevice bleDevice){//,final BluetoothGattCharacteristic characteristic){
+                                
+                                BleManager.getInstance().notify(
+                                        bleDevice,
+                                        "0783b03e-8535-b5a0-7140-a304d2495cb7",//characteristic.getService().getUuid().toString(),
+                                        "0783b03e-8535-b5a0-7140-a304d2495cb8",//characteristic.getUuid().toString(),
+                                        new BleNotifyCallback() {
+                                            @Override
+                                            public void onNotifySuccess() {
+                                                runOnUiThread(new Runnable() {
+                                                    @Override
+                                                    public void run() {
+                                                        addText(txt_log, "notify success");
+                                                                       
+                                                    }
+                                                });
+                                                sendCmd(bleDevice, "000000a0bf");
+                                            }
 
+                                            @Override
+                                            public void onNotifyFailure(final BleException exception) {
+                                                runOnUiThread(new Runnable() {
+                                                    @Override
+                                                    public void run() {
+                                                        addText(txt_log, exception.toString());
+                                                    }
+                                                });
+                                            }
+
+                                            @Override
+                                            public void onCharacteristicChanged(byte[] data) {
+                                                addText(txt_log, HexUtil.formatHexString(data, true));
+
+/*
+                                                runOnUiThread(new Runnable() {
+                                                    @Override
+                                                    public void run() {
+                                                            try{
+                                                                Thread.sleep(500);
+                                                            }
+                                                            catch(Exception e){
+                                                                addText(txt_log,e.getMessage());
+                                                            }
+                                                            if( ! sw_auto.isChecked())
+                                                            BleManager.getInstance().disconnect(bleDevice);
+                                                    }
+                                                });
+*/
+                                            }
+                                        });
+
+    }
+    private void sendCmd(final BleDevice bleDevice, final String cmd){
+                            BleManager.getInstance().write(
+                                    bleDevice,
+                                        "0783b03e-8535-b5a0-7140-a304d2495cb7",//characteristic.getService().getUuid().toString(),
+                                        "0783b03e-8535-b5a0-7140-a304d2495cba",//characteristic.getUuid().toString(),
+                                    HexUtil.hexStringToBytes(cmd),
+                                    new BleWriteCallback() {
+
+                                        @Override
+                                        public void onWriteSuccess(final int current, final int total, final byte[] justWrite) {
+                                            runOnUiThread(new Runnable() {
+                                                @Override
+                                                public void run() {
+                                                    addText(txt_log, "write success, current: " + current
+                                                            + " total: " + total
+                                                            + " justWrite: " + HexUtil.formatHexString(justWrite, true));
+                                                }
+                                            });
+                                        }
+
+                                        @Override
+                                        public void onWriteFailure(final BleException exception) {
+                                            runOnUiThread(new Runnable() {
+                                                @Override
+                                                public void run() {
+                                                    addText(txt_log, exception.toString());
+                                                }
+                                            });
+                                        }
+                                    });
+        
+    }
     private void readRssi(BleDevice bleDevice) {
         BleManager.getInstance().readRssi(bleDevice, new BleRssiCallback() {
             @Override
@@ -415,5 +528,41 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
             }
         }
     }
+    
+    private void addText(TextView textView, String content) {
+        textView.append(formatter.format(new Date()) + " : ");   
+        textView.append(content);
+        textView.append("\n");
+        int offset = textView.getLineCount() * textView.getLineHeight();
+        if (offset > textView.getHeight()) {
+            textView.scrollTo(0, offset - textView.getHeight());
+        }
+    }
+//    private class UUIDHelper {
 
+        // base UUID used to build 128 bit Bluetooth UUIDs
+        public static final String UUID_BASE = "0000XXXX-0000-1000-8000-00805f9b34fb";
+
+        // handle 16 and 128 bit UUIDs
+        public static UUID uuidFromString(String uuid) {
+
+            if (uuid.length() == 4) {
+                uuid = UUID_BASE.replace("XXXX", uuid);
+            }
+            return UUID.fromString(uuid);
+        }
+
+        // return 16 bit UUIDs where possible
+        public static String uuidToString(UUID uuid) {
+            String longUUID = uuid.toString();
+            Pattern pattern = Pattern.compile("0000(.{4})-0000-1000-8000-00805f9b34fb", Pattern.CASE_INSENSITIVE);
+            Matcher matcher = pattern.matcher(longUUID);
+            if (matcher.matches()) {
+                // 16 bit UUID
+                return matcher.group(1);
+            } else {
+            return longUUID;
+            }
+        }
+ //   }
 }

@@ -115,6 +115,15 @@
         android:paddingStart="5dp"
         android:scrollbars="none" />
 
+    <TextView
+        android:id="@+id/log_txt"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fadeScrollbars="false"
+        android:padding="10dp"
+        android:scrollbars="vertical"
+        android:textSize="13sp" />
+
 
 </LinearLayout>
 
